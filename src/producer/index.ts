@@ -1,5 +1,31 @@
 const STREAM_URL = "https://stream.wikimedia.org/v2/stream/recentchange";
 
+type EditEvent = {
+  id: string;
+  ts: number;
+  ingest_ts: number;
+  wiki: string;
+  user: string;
+  title: string;
+  type: string;
+  bot: boolean;
+  delta_bytes: number;
+};
+
+function normalize(raw: any): EditEvent {
+  return {
+    id: String(raw.id),
+    ts: raw.timestamp,
+    ingest_ts: Date.now(),
+    wiki: raw.wiki,
+    user: raw.user,
+    title: raw.title,
+    type: raw.type,
+    bot: raw.bot,
+    delta_bytes: raw.length ? raw.length.new - raw.length.old : 0,
+  };
+}
+
 async function main() {
   const res = await fetch(STREAM_URL, {
     headers: {
@@ -30,8 +56,8 @@ async function main() {
 
       for (const line of rawEvent.split("\n")) {
         if (line.startsWith("data: ")) {
-          const payload = JSON.parse(line.slice("data: ".length));
-          console.log(payload);
+          const raw = JSON.parse(line.slice("data: ".length));
+          console.log(normalize(raw));
         }
       }
     }
