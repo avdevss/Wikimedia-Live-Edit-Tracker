@@ -1,10 +1,13 @@
 import { Kafka } from "kafkajs";
+import Redis from "ioredis";
 import { createWindow, ingest, topK, type SlidingWindow } from "./window.ts";
 
 const KAFKA_TOPIC = "edits";
+const TOP_N_SEALED = 50;
 
 const kafka = new Kafka({ clientId: "aggregator", brokers: ["localhost:9092"] });
 const consumer = kafka.consumer({ groupId: "aggregator" });
+const redis = new Redis();
 
 const dims: Record<string, SlidingWindow> = {
   editors: createWindow(),
@@ -45,10 +48,27 @@ async function main() {
   });
 }
 
-setInterval(() => {
+async function sealToRedis() {
   for (const dim of Object.keys(dims)) {
-    console.log(`--- ${dim} ---`, topK(dims[dim], 10));
+    const top = topK(dims[dim], TOP_N_SEALED);
+    if (top.length === 0) continue; // nothing to seal yet, leave prior state as-is
+
+    const nextKey = `lb:${dim}:next`;
+    const winKey = `lb:${dim}:win`;
+    const zaddArgs: (string | number)[] = [];
+    for (const [member, score] of top) zaddArgs.push(score, member);
+
+    await redis
+      .multi()
+      .del(nextKey)
+      .zadd(nextKey, ...zaddArgs)
+      .rename(nextKey, winKey)
+      .exec();
   }
+}
+
+setInterval(() => {
+  sealToRedis().catch((e) => console.error("seal failed:", e));
 }, 1000);
 
 main().catch((e) => {
