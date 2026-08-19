@@ -1,6 +1,7 @@
 import WebSocket, { WebSocketServer } from "ws";
 import Redis from "ioredis";
 import { Kafka } from "kafkajs";
+import { Histogram } from "../lib/histogram.ts";
 
 const PORT = 8080;
 const TOP_N_UI = 20;
@@ -10,12 +11,20 @@ const POLL_MS = 250;
 const STATS_MS = 1000;
 const KAFKA_TOPIC = "edits";
 const CONSUMER_GROUP = "aggregator";
-const LATENCY_SAMPLE_WINDOW = 60; // rolling ~60s of once-per-second samples
 
 const redis = new Redis();
 const wss = new WebSocketServer({ port: PORT });
 const kafka = new Kafka({ clientId: "api", brokers: ["localhost:9092"] });
 const admin = kafka.admin();
+
+// Pipeline latency: producer receipt (ingest_ts) to the moment this server
+// actually emits a frame reflecting that data. Sampled at the moment of a
+// real delta broadcast (not on an independent timer), using the freshest
+// ingest_ts known at that instant. This is the honest headline number —
+// single machine, one clock, no skew — kept separate from the producer's
+// source-to-ingest lag (see src/producer/index.ts), which measures a
+// different thing (Wikimedia's own propagation delay).
+const pipelineLatency = new Histogram();
 
 // What every connected client currently has, per dimension. Polling
 // diffs against this to decide what's actually changed, so clients only
@@ -53,6 +62,12 @@ function broadcast(msg: object) {
 }
 
 async function pollAndBroadcastDeltas() {
+  // Fetched once per tick, reused for every dim's broadcast this tick —
+  // same Redis load as before, just now driving real per-frame samples
+  // instead of an independent once-a-second guess.
+  const rawLatestIngestTs = await redis.get("lb:latest_ingest_ts");
+  const latestIngestTs = rawLatestIngestTs ? Number(rawLatestIngestTs) : null;
+
   for (const dim of DIMENSIONS) {
     const current = new Map(await readDim(dim));
     const changes: Array<[string, number]> = [];
@@ -66,6 +81,9 @@ async function pollAndBroadcastDeltas() {
     }
 
     if (changes.length > 0 || removed.length > 0) {
+      if (latestIngestTs !== null) {
+        pipelineLatency.record(Date.now() - latestIngestTs);
+      }
       broadcast({ type: "delta", dim, server_ts: Date.now(), changes, removed });
     }
 
@@ -75,13 +93,6 @@ async function pollAndBroadcastDeltas() {
 
 let prevHighWatermark: number | null = null;
 let prevSampleTs: number | null = null;
-const latencySamples: number[] = [];
-
-function percentile(sorted: number[], p: number): number {
-  if (sorted.length === 0) return 0;
-  const idx = Math.min(sorted.length - 1, Math.floor(p * sorted.length));
-  return sorted[idx];
-}
 
 async function computeStats() {
   const [topicOffsets, groupOffsets] = await Promise.all([
@@ -110,22 +121,17 @@ async function computeStats() {
   prevHighWatermark = totalHigh;
   prevSampleTs = now;
 
-  const rawLatestIngestTs = await redis.get("lb:latest_ingest_ts");
-  if (rawLatestIngestTs) {
-    latencySamples.push(now - Number(rawLatestIngestTs));
-    if (latencySamples.length > LATENCY_SAMPLE_WINDOW) latencySamples.shift();
-  }
-  const sortedLatency = [...latencySamples].sort((a, b) => a - b);
+  const { p50, p95, p99, p999 } = pipelineLatency.percentiles();
+  console.log(
+    `eps=${eps.toFixed(1)} lag=${consumerLag} pipeline_latency_ms(n=${pipelineLatency.count()}):`,
+    { p50, p95, p99, p999 },
+  );
 
   broadcast({
     type: "stats",
     eps: Math.round(eps * 10) / 10,
     consumer_lag: consumerLag,
-    latency_ms: {
-      p50: percentile(sortedLatency, 0.5),
-      p95: percentile(sortedLatency, 0.95),
-      p99: percentile(sortedLatency, 0.99),
-    },
+    latency_ms: { p50, p95, p99 },
   });
 }
 
