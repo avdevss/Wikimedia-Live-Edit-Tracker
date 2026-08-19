@@ -1,0 +1,528 @@
+<title>Wikimedia Trending Leaderboard</title>
+<style>
+  :root {
+    --bg: #f2ead9;
+    --panel-bg: #fffdf7;
+    --card-bg: #e3f3e6;
+    --card-border: #cbe8d1;
+    --stat-bg: #d5edd9;
+    --stat-text: #14532d;
+    --stat-label: #3f7a52;
+    --accent: #15803d;
+    --accent-soft-bg: #ffffff;
+    --text: #1f2937;
+    --title: #111111;
+    --muted: #6f8a76;
+    --danger: #b91c1c;
+    --shadow: 0 6px 24px rgba(30, 20, 0, 0.08);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { height: 100%; }
+
+  body {
+    margin: 0;
+    padding: 22px;
+    display: flex;
+    color: var(--text);
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", "Courier New", monospace;
+    background:
+      radial-gradient(circle at 8% 12%, rgba(21, 128, 61, 0.16), transparent 40%),
+      radial-gradient(circle at 92% 15%, rgba(180, 83, 9, 0.14), transparent 38%),
+      radial-gradient(circle at 85% 90%, rgba(21, 128, 61, 0.12), transparent 42%),
+      var(--bg);
+  }
+
+  .app-frame {
+    position: relative;
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--panel-bg);
+    border: 2px solid var(--title);
+    border-radius: 10px;
+    box-shadow: 6px 6px 0 var(--title);
+    overflow: hidden;
+  }
+
+  .app-frame::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      rgba(0, 0, 0, 0.025) 0px,
+      rgba(0, 0, 0, 0.025) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+  }
+
+  .topbar {
+    flex: 0 0 auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+    padding: 26px 30px 6px;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: 1.9rem;
+    font-weight: 900;
+    color: var(--title);
+    letter-spacing: -0.02em;
+  }
+
+  .stats-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .stat-card {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 16px;
+    border-radius: 6px;
+    background: var(--stat-bg);
+    border: 2px solid var(--accent);
+    box-shadow: 3px 3px 0 var(--accent);
+    min-width: 84px;
+  }
+
+  .stat-value {
+    font-size: 1.25rem;
+    font-weight: 800;
+    color: var(--stat-text);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stat-label {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--stat-label);
+  }
+
+  .stat-card.status .stat-value {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 1rem;
+  }
+
+  .stat-card.status .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #22c55e;
+  }
+
+  .stat-card.status.disconnected {
+    background: #fbdede;
+    border-color: var(--danger);
+    box-shadow: 3px 3px 0 var(--danger);
+  }
+  .stat-card.status.disconnected .dot { background: var(--danger); }
+  .stat-card.status.disconnected .stat-value,
+  .stat-card.status.disconnected .stat-label { color: var(--danger); }
+
+  .grid {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+    gap: 20px;
+    padding: 20px 30px 30px;
+  }
+
+  @media (max-width: 700px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+
+  .panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--card-bg);
+    border: 2px solid var(--card-border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .panel h2 {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    padding: 16px 20px 8px;
+    font-size: 0.9rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--title);
+  }
+
+  /* Pixel-art sprites, hand-drawn with CSS box-shadow: one 3px "pixel"
+     square repeated at grid offsets. No images, no icon font. */
+  .px {
+    position: relative;
+    flex: 0 0 auto;
+    width: 24px;
+    height: 24px;
+  }
+
+  .px::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 2px;
+    height: 2px;
+    box-shadow: var(--px-shape);
+  }
+
+  .px::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 2px;
+    height: 2px;
+    box-shadow: var(--px-shape-2, none);
+  }
+
+  /* Mouse cursor / pointer arrow, pointing up-left, tapering to a tail.
+     White fill with a black outline: the outline is traced automatically
+     by stacking drop-shadow() in all 8 directions around the white shape,
+     rather than hand-drawing every border pixel. */
+  .px-editors {
+    width: 14px;
+    height: 18px;
+  }
+  .px-editors::before {
+    color: #ffffff;
+    transform: scale(0.75);
+    transform-origin: top left;
+    filter:
+      drop-shadow(1px 0 0 #000)
+      drop-shadow(-1px 0 0 #000)
+      drop-shadow(0 1px 0 #000)
+      drop-shadow(0 -1px 0 #000)
+      drop-shadow(1px 1px 0 #000)
+      drop-shadow(1px -1px 0 #000)
+      drop-shadow(-1px 1px 0 #000)
+      drop-shadow(-1px -1px 0 #000);
+    --px-shape:
+      0px 0px,
+      0px 2px, 2px 2px,
+      0px 4px, 2px 4px, 4px 4px,
+      0px 6px, 2px 6px, 4px 6px, 6px 6px,
+      0px 8px, 2px 8px, 4px 8px, 6px 8px, 8px 8px,
+      0px 10px, 2px 10px, 4px 10px, 6px 10px, 8px 10px, 10px 10px,
+      0px 12px, 2px 12px, 4px 12px, 6px 12px, 8px 12px, 10px 12px, 12px 12px,
+      0px 14px, 2px 14px, 4px 14px,
+      0px 16px, 2px 16px,
+      0px 18px;
+  }
+
+  /* Folder */
+  .px-pages {
+    width: 24px;
+    height: 18px;
+  }
+  .px-pages::before {
+    color: #b45309;
+    --px-shape:
+      3px 0px, 6px 0px,
+      0px 3px, 3px 3px, 6px 3px, 9px 3px, 12px 3px, 15px 3px, 18px 3px,
+      0px 6px, 21px 6px,
+      0px 9px, 21px 9px,
+      0px 12px, 21px 12px,
+      0px 15px, 3px 15px, 6px 15px, 9px 15px, 12px 15px, 15px 15px, 18px 15px, 21px 15px;
+  }
+
+  /* Space-invader alien */
+  .px-wikis {
+    width: 24px;
+    height: 18px;
+  }
+  .px-wikis::before {
+    color: #6d28d9;
+    --px-shape:
+      4px 0px, 16px 0px,
+      6px 2px, 14px 2px,
+      4px 4px, 6px 4px, 8px 4px, 10px 4px, 12px 4px, 14px 4px, 16px 4px,
+      2px 6px, 4px 6px, 8px 6px, 10px 6px, 12px 6px, 16px 6px, 18px 6px,
+      0px 8px, 2px 8px, 4px 8px, 6px 8px, 8px 8px, 10px 8px, 12px 8px, 14px 8px, 16px 8px, 18px 8px, 20px 8px,
+      0px 10px, 4px 10px, 6px 10px, 8px 10px, 10px 10px, 12px 10px, 14px 10px, 16px 10px, 20px 10px,
+      0px 12px, 4px 12px, 16px 12px, 20px 12px,
+      6px 14px, 8px 14px, 12px 14px, 14px 14px;
+  }
+
+  /* Retro CRT monitor: dark bezel + green screen glow */
+  .px-bots {
+    width: 22px;
+    height: 20px;
+  }
+  .px-bots::before {
+    color: #1f2937;
+    --px-shape:
+      0px 0px, 2px 0px, 4px 0px, 6px 0px, 8px 0px, 10px 0px, 12px 0px, 14px 0px, 16px 0px, 18px 0px,
+      0px 2px, 18px 2px,
+      0px 4px, 18px 4px,
+      0px 6px, 18px 6px,
+      0px 8px, 18px 8px,
+      0px 10px, 2px 10px, 4px 10px, 6px 10px, 8px 10px, 10px 10px, 12px 10px, 14px 10px, 16px 10px, 18px 10px,
+      8px 12px, 10px 12px,
+      6px 14px, 8px 14px, 10px 14px, 12px 14px,
+      4px 16px, 6px 16px, 8px 16px, 10px 16px, 12px 16px, 14px 16px;
+  }
+  .px-bots::after {
+    color: #22c55e;
+    --px-shape-2:
+      4px 2px, 6px 2px, 8px 2px, 10px 2px, 12px 2px, 14px 2px,
+      4px 4px, 6px 4px, 8px 4px, 10px 4px, 12px 4px, 14px 4px,
+      4px 6px, 6px 6px, 8px 6px, 10px 6px, 12px 6px, 14px 6px,
+      4px 8px, 6px 8px, 8px 8px, 10px 8px, 12px 8px, 14px 8px;
+  }
+
+  .rows {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    list-style: none;
+    margin: 0;
+    padding: 4px 8px 8px;
+  }
+
+  .rows li {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 7px 12px;
+    border-radius: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .rows li:hover { background: rgba(21, 128, 61, 0.07); }
+
+  .rank {
+    width: 18px;
+    color: var(--muted);
+    font-weight: 700;
+    font-size: 0.8rem;
+    text-align: right;
+  }
+
+  .avatar {
+    flex: 0 0 auto;
+    width: 26px;
+    height: 26px;
+    border-radius: 5px;
+    border: 1.5px solid var(--title);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ffffff;
+    font-weight: 800;
+    font-size: 0.7rem;
+  }
+
+  .name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .count {
+    font-weight: 800;
+    font-size: 0.8rem;
+    color: var(--accent);
+    background: var(--accent-soft-bg);
+    border: 1.5px solid var(--accent);
+    padding: 2px 9px;
+    border-radius: 4px;
+  }
+</style>
+
+<div class="app-frame">
+  <header class="topbar">
+    <h1>Wikimedia Trending Leaderboard</h1>
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-value" id="badge-eps">--</div>
+        <div class="stat-label">events/sec</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="badge-lag">--</div>
+        <div class="stat-label">consumer lag</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="badge-p99">--ms</div>
+        <div class="stat-label">p99 latency</div>
+      </div>
+      <div class="stat-card status disconnected" id="badge-status">
+        <div class="stat-value"><span class="dot"></span><span id="status-text">connecting</span></div>
+        <div class="stat-label">connection</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="panel">
+      <h2><span class="px px-editors"></span>Editors</h2>
+      <ol class="rows" id="rows-editors">
+        <li><span class="rank">1</span><span class="avatar" style="background:#15803d">S</span><span class="name">Sadopaul</span><span class="count">421</span></li>
+        <li><span class="rank">2</span><span class="avatar" style="background:#b45309">F</span><span class="name">ForzaGreen</span><span class="count">318</span></li>
+        <li><span class="rank">3</span><span class="avatar" style="background:#0f766e">S</span><span class="name">SchlurcherBot</span><span class="count">289</span></li>
+        <li><span class="rank">4</span><span class="avatar" style="background:#9d174d">F</span><span class="name">Faebot</span><span class="count">201</span></li>
+        <li><span class="rank">5</span><span class="avatar" style="background:#4c1d95">C</span><span class="name">CheWikibot</span><span class="count">167</span></li>
+      </ol>
+    </section>
+
+    <section class="panel">
+      <h2><span class="px px-pages"></span>Pages</h2>
+      <ol class="rows" id="rows-pages">
+        <li><span class="rank">1</span><span class="avatar" style="background:#15803d">C</span><span class="name">commonswiki:Category:CC-BY-SA-4.0</span><span class="count">37</span></li>
+        <li><span class="rank">2</span><span class="avatar" style="background:#b45309">E</span><span class="name">enwiki:Dr. Ox's Experiment</span><span class="count">22</span></li>
+        <li><span class="rank">3</span><span class="avatar" style="background:#0f766e">W</span><span class="name">wikidatawiki:Q141127207</span><span class="count">14</span></li>
+        <li><span class="rank">4</span><span class="avatar" style="background:#9d174d">A</span><span class="name">arwiki:نادي الشعلة</span><span class="count">9</span></li>
+        <li><span class="rank">5</span><span class="avatar" style="background:#4c1d95">U</span><span class="name">ukwiki:Категорія:Футболісти</span><span class="count">6</span></li>
+      </ol>
+    </section>
+
+    <section class="panel">
+      <h2><span class="px px-wikis"></span>Wikis</h2>
+      <ol class="rows" id="rows-wikis">
+        <li><span class="rank">1</span><span class="avatar" style="background:#15803d">C</span><span class="name">commonswiki</span><span class="count">8532</span></li>
+        <li><span class="rank">2</span><span class="avatar" style="background:#b45309">W</span><span class="name">wikidatawiki</span><span class="count">4210</span></li>
+        <li><span class="rank">3</span><span class="avatar" style="background:#0f766e">E</span><span class="name">enwiki</span><span class="count">1876</span></li>
+        <li><span class="rank">4</span><span class="avatar" style="background:#9d174d">C</span><span class="name">cewiki</span><span class="count">612</span></li>
+        <li><span class="rank">5</span><span class="avatar" style="background:#4c1d95">A</span><span class="name">arwiki</span><span class="count">340</span></li>
+      </ol>
+    </section>
+
+    <section class="panel">
+      <h2><span class="px px-bots"></span>Humans vs Bots</h2>
+      <ol class="rows" id="rows-humans_vs_bots">
+        <li><span class="rank">1</span><span class="avatar" style="background:#15803d">H</span><span class="name">human</span><span class="count">6240</span></li>
+        <li><span class="rank">2</span><span class="avatar" style="background:#b45309">B</span><span class="name">bot</span><span class="count">3924</span></li>
+      </ol>
+    </section>
+  </main>
+</div>
+
+<script>
+  const WS_URL = "ws://localhost:8080";
+  const DIMENSIONS = ["editors", "pages", "wikis", "humans_vs_bots"];
+  const AVATAR_COLORS = ["#15803d", "#b45309", "#0f766e", "#9d174d", "#4c1d95"];
+
+  // Local mirror of each dimension's current top-N (member -> count).
+  // Snapshots replace it wholesale; deltas upsert/delete individual members.
+  const state = {};
+  for (const dim of DIMENSIONS) state[dim] = new Map();
+
+  function avatarColor(name) {
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+    return AVATAR_COLORS[hash % AVATAR_COLORS.length];
+  }
+
+  function buildRow(member, count, rank) {
+    const li = document.createElement("li");
+
+    const rankSpan = document.createElement("span");
+    rankSpan.className = "rank";
+    rankSpan.textContent = rank;
+
+    const avatar = document.createElement("span");
+    avatar.className = "avatar";
+    avatar.style.background = avatarColor(member);
+    avatar.textContent = member.charAt(0).toUpperCase();
+
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = member;
+
+    const count_ = document.createElement("span");
+    count_.className = "count";
+    count_.textContent = count;
+
+    li.append(rankSpan, avatar, name, count_);
+    return li;
+  }
+
+  function renderFromState(dim) {
+    const entries = [...state[dim].entries()].sort((a, b) => b[1] - a[1]);
+    const container = document.getElementById(`rows-${dim}`);
+    container.innerHTML = "";
+    entries.forEach(([member, count], i) => container.appendChild(buildRow(member, count, i + 1)));
+  }
+
+  function applySnapshot(msg) {
+    for (const dim of DIMENSIONS) {
+      state[dim] = new Map(msg.dims[dim] || []);
+      renderFromState(dim);
+    }
+  }
+
+  function applyDelta(msg) {
+    const map = state[msg.dim];
+    for (const [member, count] of msg.changes) map.set(member, count);
+    for (const member of msg.removed) map.delete(member);
+    renderFromState(msg.dim);
+  }
+
+  function applyStats(msg) {
+    document.getElementById("badge-eps").textContent = msg.eps.toFixed(1);
+    document.getElementById("badge-lag").textContent = msg.consumer_lag;
+    document.getElementById("badge-p99").textContent = `${msg.latency_ms.p99}ms`;
+  }
+
+  function setStatus(connected) {
+    const badge = document.getElementById("badge-status");
+    const text = document.getElementById("status-text");
+    badge.classList.toggle("disconnected", !connected);
+    text.textContent = connected ? "live" : "reconnecting";
+  }
+
+  let reconnectAttempt = 0;
+
+  function connect() {
+    const ws = new WebSocket(WS_URL);
+
+    ws.onopen = () => {
+      reconnectAttempt = 0;
+      setStatus(true);
+    };
+
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      if (msg.type === "snapshot") applySnapshot(msg);
+      else if (msg.type === "delta") applyDelta(msg);
+      else if (msg.type === "stats") applyStats(msg);
+    };
+
+    ws.onclose = () => {
+      setStatus(false);
+      const wait = Math.min(10_000, 500 * 2 ** reconnectAttempt);
+      reconnectAttempt++;
+      setTimeout(connect, wait);
+    };
+
+    ws.onerror = () => ws.close();
+  }
+
+  connect();
+</script>
