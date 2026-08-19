@@ -1,12 +1,13 @@
 import { Kafka } from "kafkajs";
 import Redis from "ioredis";
-import { createWindow, ingest, advance, topK, type SlidingWindow } from "./window.ts";
+import { createWindow, ingest, advance, topK, WINDOW_SECONDS, type SlidingWindow } from "./window.ts";
 
 const KAFKA_TOPIC = "edits";
 const TOP_N_SEALED = 50;
 
 const kafka = new Kafka({ clientId: "aggregator", brokers: ["localhost:9092"] });
 const consumer = kafka.consumer({ groupId: "aggregator" });
+const admin = kafka.admin();
 const redis = new Redis();
 
 const dims: Record<string, SlidingWindow> = {
@@ -37,6 +38,24 @@ function memberFor(dim: string, event: any): string {
   }
 }
 
+// Seeks every partition to the offset nearest "now minus the window size,"
+// regardless of whatever this consumer group last committed. On restart we
+// only ever care about the trailing 5 minutes anyway, so replaying from
+// there refills the window in ~2s instead of either resuming from a
+// possibly stale committed offset or waiting 5 minutes of live traffic.
+async function warmStartSeek() {
+  await admin.connect();
+  const seekTs = Date.now() - WINDOW_SECONDS * 1000;
+  const offsets = await admin.fetchTopicOffsetsByTimestamp(KAFKA_TOPIC, seekTs);
+  await admin.disconnect();
+
+  for (const { partition, offset } of offsets) {
+    if (offset === "-1") continue; // no messages that far back on this partition
+    consumer.seek({ topic: KAFKA_TOPIC, partition, offset });
+  }
+  console.log(`warm start: seeked ${offsets.length} partitions to ~${WINDOW_SECONDS}s ago`);
+}
+
 async function main() {
   await consumer.connect();
   await consumer.subscribe({ topic: KAFKA_TOPIC, fromBeginning: false });
@@ -58,6 +77,8 @@ async function main() {
       }
     },
   });
+
+  await warmStartSeek();
 }
 
 async function sealToRedis() {
@@ -102,6 +123,14 @@ async function sealToRedis() {
 setInterval(() => {
   sealToRedis().catch((e) => console.error("seal failed:", e));
 }, 1000);
+
+async function shutdown() {
+  console.log("\nleaving consumer group cleanly...");
+  await consumer.disconnect();
+  process.exit(0);
+}
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
 
 main().catch((e) => {
   console.error("fatal:", e);
