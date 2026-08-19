@@ -1,6 +1,6 @@
 import { Kafka } from "kafkajs";
 import Redis from "ioredis";
-import { createWindow, ingest, topK, type SlidingWindow } from "./window.ts";
+import { createWindow, ingest, advance, topK, type SlidingWindow } from "./window.ts";
 
 const KAFKA_TOPIC = "edits";
 const TOP_N_SEALED = 50;
@@ -39,7 +39,12 @@ async function main() {
     eachMessage: async ({ message }) => {
       if (!message.value) return;
       const event = JSON.parse(message.value.toString());
-      const bucketTs = Math.floor(Date.now() / 1000);
+      // Bucket by when the event actually entered our system (stamped once,
+      // by the producer), not by when the aggregator happened to read it.
+      // Those two differ during warm-start replay and fast catch-up after
+      // a restart, which would otherwise cram minutes of events into one
+      // or two buckets.
+      const bucketTs = Math.floor(event.ingest_ts / 1000);
 
       for (const dim of Object.keys(dims)) {
         ingest(dims[dim], memberFor(dim, event), bucketTs);
@@ -49,21 +54,37 @@ async function main() {
 }
 
 async function sealToRedis() {
+  // Ages every window forward on the wall clock, even for dimensions that
+  // received no events this tick. Without this, a dimension with no
+  // traffic (or the whole aggregator during a producer outage) would
+  // never expire its buckets and Redis would serve a frozen leaderboard
+  // forever instead of draining toward empty.
+  const wallClockTs = Math.floor(Date.now() / 1000);
+
   for (const dim of Object.keys(dims)) {
+    advance(dims[dim], wallClockTs);
     const top = topK(dims[dim], TOP_N_SEALED);
-    if (top.length === 0) continue; // nothing to seal yet, leave prior state as-is
 
     const nextKey = `lb:${dim}:next`;
     const winKey = `lb:${dim}:win`;
+
+    if (top.length === 0) {
+      await redis.del(winKey);
+      continue;
+    }
+
     const zaddArgs: (string | number)[] = [];
     for (const [member, score] of top) zaddArgs.push(score, member);
 
-    await redis
+    const results = await redis
       .multi()
       .del(nextKey)
       .zadd(nextKey, ...zaddArgs)
       .rename(nextKey, winKey)
       .exec();
+
+    const failed = results?.find(([err]) => err);
+    if (failed) console.error(`seal ${dim} failed:`, failed[0]);
   }
 }
 
