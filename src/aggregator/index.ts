@@ -16,6 +16,12 @@ const dims: Record<string, SlidingWindow> = {
   humans_vs_bots: createWindow(),
 };
 
+// Tracks the most recent event's own ingest_ts. Redis ZSETs only hold
+// cumulative counts per member, not per-event timestamps, so this is the
+// one value the API server needs read out of the aggregator to compute
+// pipeline latency (producer receipt -> frame emit).
+let latestIngestTs = 0;
+
 function memberFor(dim: string, event: any): string {
   switch (dim) {
     case "editors":
@@ -45,6 +51,7 @@ async function main() {
       // a restart, which would otherwise cram minutes of events into one
       // or two buckets.
       const bucketTs = Math.floor(event.ingest_ts / 1000);
+      latestIngestTs = Math.max(latestIngestTs, event.ingest_ts);
 
       for (const dim of Object.keys(dims)) {
         ingest(dims[dim], memberFor(dim, event), bucketTs);
@@ -85,6 +92,10 @@ async function sealToRedis() {
 
     const failed = results?.find(([err]) => err);
     if (failed) console.error(`seal ${dim} failed:`, failed[0]);
+  }
+
+  if (latestIngestTs > 0) {
+    await redis.set("lb:latest_ingest_ts", latestIngestTs);
   }
 }
 
