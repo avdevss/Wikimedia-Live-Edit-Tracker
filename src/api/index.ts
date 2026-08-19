@@ -1,14 +1,21 @@
 import WebSocket, { WebSocketServer } from "ws";
 import Redis from "ioredis";
+import { Kafka } from "kafkajs";
 
 const PORT = 8080;
 const TOP_N_UI = 20;
 const DIMENSIONS = ["editors", "pages", "wikis", "humans_vs_bots"];
 const WINDOW_MS = 300_000;
 const POLL_MS = 250;
+const STATS_MS = 1000;
+const KAFKA_TOPIC = "edits";
+const CONSUMER_GROUP = "aggregator";
+const LATENCY_SAMPLE_WINDOW = 60; // rolling ~60s of once-per-second samples
 
 const redis = new Redis();
 const wss = new WebSocketServer({ port: PORT });
+const kafka = new Kafka({ clientId: "api", brokers: ["localhost:9092"] });
+const admin = kafka.admin();
 
 // What every connected client currently has, per dimension. Polling
 // diffs against this to decide what's actually changed, so clients only
@@ -66,13 +73,82 @@ async function pollAndBroadcastDeltas() {
   }
 }
 
+let prevHighWatermark: number | null = null;
+let prevSampleTs: number | null = null;
+const latencySamples: number[] = [];
+
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const idx = Math.min(sorted.length - 1, Math.floor(p * sorted.length));
+  return sorted[idx];
+}
+
+async function computeStats() {
+  const [topicOffsets, groupOffsets] = await Promise.all([
+    admin.fetchTopicOffsets(KAFKA_TOPIC),
+    admin.fetchOffsets({ groupId: CONSUMER_GROUP, topics: [KAFKA_TOPIC] }),
+  ]);
+
+  const committed = new Map<number, number>();
+  for (const p of groupOffsets[0]?.partitions ?? []) {
+    committed.set(p.partition, Number(p.offset));
+  }
+
+  let totalHigh = 0;
+  let consumerLag = 0;
+  for (const p of topicOffsets) {
+    const high = Number(p.offset);
+    totalHigh += high;
+    consumerLag += Math.max(0, high - (committed.get(p.partition) ?? 0));
+  }
+
+  const now = Date.now();
+  const eps =
+    prevHighWatermark === null || prevSampleTs === null
+      ? 0
+      : (totalHigh - prevHighWatermark) / ((now - prevSampleTs) / 1000);
+  prevHighWatermark = totalHigh;
+  prevSampleTs = now;
+
+  const rawLatestIngestTs = await redis.get("lb:latest_ingest_ts");
+  if (rawLatestIngestTs) {
+    latencySamples.push(now - Number(rawLatestIngestTs));
+    if (latencySamples.length > LATENCY_SAMPLE_WINDOW) latencySamples.shift();
+  }
+  const sortedLatency = [...latencySamples].sort((a, b) => a - b);
+
+  broadcast({
+    type: "stats",
+    eps: Math.round(eps * 10) / 10,
+    consumer_lag: consumerLag,
+    latency_ms: {
+      p50: percentile(sortedLatency, 0.5),
+      p95: percentile(sortedLatency, 0.95),
+      p99: percentile(sortedLatency, 0.99),
+    },
+  });
+}
+
 wss.on("connection", async (ws) => {
   const snapshot = await buildSnapshot();
   ws.send(JSON.stringify(snapshot));
 });
 
-setInterval(() => {
-  pollAndBroadcastDeltas().catch((e) => console.error("poll failed:", e));
-}, POLL_MS);
+async function main() {
+  await admin.connect();
 
-console.log(`api server listening on ws://localhost:${PORT}`);
+  setInterval(() => {
+    pollAndBroadcastDeltas().catch((e) => console.error("poll failed:", e));
+  }, POLL_MS);
+
+  setInterval(() => {
+    computeStats().catch((e) => console.error("stats failed:", e));
+  }, STATS_MS);
+
+  console.log(`api server listening on ws://localhost:${PORT}`);
+}
+
+main().catch((e) => {
+  console.error("fatal:", e);
+  process.exit(1);
+});
