@@ -1,4 +1,15 @@
+import { Kafka } from "kafkajs";
+import { createWriteStream, mkdirSync } from "node:fs";
+
 const STREAM_URL = "https://stream.wikimedia.org/v2/stream/recentchange";
+const KAFKA_TOPIC = "edits";
+
+const kafka = new Kafka({ clientId: "producer", brokers: ["localhost:9092"] });
+const producer = kafka.producer();
+
+mkdirSync("data", { recursive: true });
+const captureDate = new Date().toISOString().slice(0, 10);
+const capture = createWriteStream(`data/capture-${captureDate}.jsonl`, { flags: "a" });
 
 type EditEvent = {
   id: string;
@@ -12,32 +23,43 @@ type EditEvent = {
   delta_bytes: number;
 };
 
+function deltaBytes(len: any): number {
+  if (!len || typeof len.new !== "number" || typeof len.old !== "number") return 0;
+  return len.new - len.old;
+}
+
 function normalize(raw: any): EditEvent {
   return {
-    id: String(raw.id),
+    id: `${raw.wiki}:${raw.id ?? "none"}`,
     ts: raw.timestamp,
     ingest_ts: Date.now(),
     wiki: raw.wiki,
     user: raw.user,
     title: raw.title,
     type: raw.type,
-    bot: raw.bot,
-    delta_bytes: raw.length ? raw.length.new - raw.length.old : 0,
+    bot: Boolean(raw.bot),
+    delta_bytes: deltaBytes(raw.length),
   };
 }
 
-async function main() {
+let lastEventId: string | null = null;
+let seen = 0;
+
+async function readStream(onConnected: () => void) {
   const res = await fetch(STREAM_URL, {
     headers: {
       Accept: "text/event-stream",
       "User-Agent":
         "trending-leaderboard/0.1 (https://github.com/avdevss/trending-leaderboard)",
+      ...(lastEventId ? { "Last-Event-ID": lastEventId } : {}),
     },
   });
 
   if (!res.ok || !res.body) {
     throw new Error(`stream connect failed: ${res.status} ${res.statusText}`);
   }
+  console.log(`connected${lastEventId ? " (resumed)" : ""}`);
+  onConnected();
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -45,23 +67,65 @@ async function main() {
 
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) throw new Error("stream ended");
 
     buffer += decoder.decode(value, { stream: true });
 
     let boundary: number;
     while ((boundary = buffer.indexOf("\n\n")) !== -1) {
-      const rawEvent = buffer.slice(0, boundary);
+      const block = buffer.slice(0, boundary);
       buffer = buffer.slice(boundary + 2);
 
-      for (const line of rawEvent.split("\n")) {
-        if (line.startsWith("data: ")) {
-          const raw = JSON.parse(line.slice("data: ".length));
-          console.log(normalize(raw));
+      for (const line of block.split("\n")) {
+        if (line.startsWith("id: ")) {
+          lastEventId = line.slice(4);
+        } else if (line.startsWith("data: ")) {
+          const payload = line.slice(6);
+          let raw: any;
+          try {
+            raw = JSON.parse(payload);
+          } catch {
+            continue;
+          }
+          capture.write(payload + "\n");
+          const event = normalize(raw);
+          await producer.send({
+            topic: KAFKA_TOPIC,
+            messages: [{ key: event.wiki, value: JSON.stringify(event) }],
+          });
+          if (++seen % 500 === 0) console.log(`${seen} events produced`);
         }
       }
     }
   }
 }
 
-main();
+async function main() {
+  await producer.connect();
+
+  let attempt = 0;
+  while (true) {
+    try {
+      await readStream(() => {
+        attempt = 0;
+      });
+    } catch (err) {
+      const base = Math.min(30_000, 1000 * 2 ** attempt);
+      const wait = base / 2 + Math.random() * (base / 2);
+      console.error(`disconnected: ${(err as Error).message} — retry in ${Math.round(wait)}ms`);
+      await new Promise((r) => setTimeout(r, wait));
+      attempt++;
+    }
+  }
+}
+
+process.on("SIGINT", async () => {
+  console.log(`\nshutting down after ${seen} events`);
+  await producer.disconnect();
+  capture.end(() => process.exit(0));
+});
+
+main().catch((e) => {
+  console.error("fatal:", e);
+  process.exit(1);
+});
