@@ -1,11 +1,20 @@
 import { Kafka } from "kafkajs";
 import { createWriteStream, mkdirSync } from "node:fs";
+import { Histogram } from "../lib/histogram.ts";
 
 const STREAM_URL = "https://stream.wikimedia.org/v2/stream/recentchange";
 const KAFKA_TOPIC = "edits";
 
 const kafka = new Kafka({ clientId: "producer", brokers: ["localhost:9092"] });
 const producer = kafka.producer();
+
+// Source-to-ingest lag: Wikimedia's own event timestamp (seconds) to our
+// ingest_ts (ms), both known together right here. Indicative only — mixes
+// in Wikimedia's own propagation delay and any clock skew on this machine,
+// and their timestamp is only second-granular. Kept deliberately separate
+// from pipeline latency (producer receipt to API frame emit), which is a
+// different measurement recorded in the API server.
+const sourceToIngestLag = new Histogram();
 
 mkdirSync("data", { recursive: true });
 const captureDate = new Date().toISOString().slice(0, 10);
@@ -89,11 +98,15 @@ async function readStream(onConnected: () => void) {
           }
           capture.write(payload + "\n");
           const event = normalize(raw);
+          sourceToIngestLag.record(event.ingest_ts - event.ts * 1000);
           await producer.send({
             topic: KAFKA_TOPIC,
             messages: [{ key: event.wiki, value: JSON.stringify(event) }],
           });
-          if (++seen % 500 === 0) console.log(`${seen} events produced`);
+          if (++seen % 500 === 0) {
+            console.log(`${seen} events produced`);
+            console.log("source-to-ingest lag ms (indicative only):", sourceToIngestLag.percentiles());
+          }
         }
       }
     }
