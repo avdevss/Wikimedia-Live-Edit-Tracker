@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "producer": "tsx src/producer/index.ts"
+    "producer": "tsx src/producer/index.ts",
+    "aggregator": "tsx src/aggregator/index.ts"
   },
   "dependencies": {
     "ioredis": "^6.0.0",
