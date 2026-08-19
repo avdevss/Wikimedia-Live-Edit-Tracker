@@ -1,6 +1,7 @@
 import { Kafka } from "kafkajs";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { Histogram } from "../lib/histogram.ts";
+import { normalize } from "../lib/normalize.ts";
 
 const STREAM_URL = "https://stream.wikimedia.org/v2/stream/recentchange";
 const KAFKA_TOPIC = "edits";
@@ -19,37 +20,6 @@ const sourceToIngestLag = new Histogram();
 mkdirSync("data", { recursive: true });
 const captureDate = new Date().toISOString().slice(0, 10);
 const capture = createWriteStream(`data/capture-${captureDate}.jsonl`, { flags: "a" });
-
-type EditEvent = {
-  id: string;
-  ts: number;
-  ingest_ts: number;
-  wiki: string;
-  user: string;
-  title: string;
-  type: string;
-  bot: boolean;
-  delta_bytes: number;
-};
-
-function deltaBytes(len: any): number {
-  if (!len || typeof len.new !== "number" || typeof len.old !== "number") return 0;
-  return len.new - len.old;
-}
-
-function normalize(raw: any): EditEvent {
-  return {
-    id: `${raw.wiki}:${raw.id ?? "none"}`,
-    ts: raw.timestamp,
-    ingest_ts: Date.now(),
-    wiki: raw.wiki,
-    user: raw.user,
-    title: raw.title,
-    type: raw.type,
-    bot: Boolean(raw.bot),
-    delta_bytes: deltaBytes(raw.length),
-  };
-}
 
 let lastEventId: string | null = null;
 let seen = 0;
