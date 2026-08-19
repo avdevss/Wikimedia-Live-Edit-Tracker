@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "producer": "tsx src/producer/index.ts",
-    "aggregator": "tsx src/aggregator/index.ts"
+    "aggregator": "tsx src/aggregator/index.ts",
+    "api": "tsx src/api/index.ts"
   },
   "dependencies": {
     "ioredis": "^6.0.0",
