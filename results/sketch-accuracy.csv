@@ -1,0 +1,7 @@
+dimension,sample_events,cardinality,budget,structure,bytes,top20_overlap,mean_abs_rank_error,mean_relative_count_error
+editors,525000,15404,small,count_min_sketch,4096,18,0.400,0.0603
+editors,525000,15404,small,space_saving,1298,16,5.750,0.2847
+editors,525000,15404,medium,count_min_sketch,16384,20,0.000,0.0105
+editors,525000,15404,medium,space_saving,5638,19,0.250,0.0061
+editors,525000,15404,large,count_min_sketch,65536,20,0.000,0.0009
+editors,525000,15404,large,space_saving,22444,20,0.000,0.0006
