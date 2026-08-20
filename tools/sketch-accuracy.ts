@@ -15,7 +15,7 @@ function parseArgs() {
 }
 
 const WINDOW_SECONDS = 300;
-const MULTIPLIERS = [25, 50, 75];
+const MULTIPLIERS = [25, 50, 75, 100];
 
 type Budget = { label: string; cmsWidth: number; cmsDepth: number; ssCapacity: number };
 

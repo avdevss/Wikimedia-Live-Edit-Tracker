@@ -23,3 +23,11 @@ editors,75,787500,20921,medium,count_min_sketch,16384,20,0.100,0.0088
 editors,75,787500,20921,medium,space_saving,5784,19,0.200,0.0117
 editors,75,787500,20921,large,count_min_sketch,65536,20,0.000,0.0010
 editors,75,787500,20921,large,space_saving,22902,19,0.050,0.0019
+editors,100,1050000,25470,xsmall,count_min_sketch,4096,18,0.650,0.0617
+editors,100,1050000,25470,xsmall,space_saving,1372,16,5.900,0.3015
+editors,100,1050000,25470,small,count_min_sketch,8192,19,0.300,0.0257
+editors,100,1050000,25470,small,space_saving,2820,19,0.900,0.0517
+editors,100,1050000,25470,medium,count_min_sketch,16384,20,0.000,0.0091
+editors,100,1050000,25470,medium,space_saving,5648,20,0.400,0.0194
+editors,100,1050000,25470,large,count_min_sketch,65536,20,0.000,0.0011
+editors,100,1050000,25470,large,space_saving,22546,20,0.100,0.0028

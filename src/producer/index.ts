@@ -15,7 +15,18 @@ const producer = kafka.producer();
 // and their timestamp is only second-granular. Kept deliberately separate
 // from pipeline latency (producer receipt to API frame emit), which is a
 // different measurement recorded in the API server.
-const sourceToIngestLag = new Histogram();
+//
+// Tracked twice, deliberately: `sourceToIngestLagAll` includes everything,
+// `sourceToIngestLagSteady` excludes the first BACKLOG_WINDOW events after
+// every (re)connect. A Last-Event-ID resume delivers a small backlog of
+// buffered events right after reconnecting, each carrying an inherently
+// large source-to-ingest gap by construction (they happened while we were
+// disconnected) — that's real, but it's not steady-state propagation
+// delay, and averaging it in without saying so overstates normal lag.
+const sourceToIngestLagAll = new Histogram();
+const sourceToIngestLagSteady = new Histogram();
+const BACKLOG_WINDOW = 2000; // events since last connect before counting as steady-state
+let eventsSinceConnect = 0;
 
 mkdirSync("data", { recursive: true });
 const captureDate = new Date().toISOString().slice(0, 10);
@@ -68,14 +79,21 @@ async function readStream(onConnected: () => void) {
           }
           capture.write(payload + "\n");
           const event = normalize(raw);
-          sourceToIngestLag.record(event.ingest_ts - event.ts * 1000);
+          const lag = event.ingest_ts - event.ts * 1000;
+          sourceToIngestLagAll.record(lag);
+          eventsSinceConnect++;
+          if (eventsSinceConnect > BACKLOG_WINDOW) sourceToIngestLagSteady.record(lag);
           await producer.send({
             topic: KAFKA_TOPIC,
             messages: [{ key: event.wiki, value: JSON.stringify(event) }],
           });
           if (++seen % 500 === 0) {
             console.log(`${seen} events produced`);
-            console.log("source-to-ingest lag ms (indicative only):", sourceToIngestLag.percentiles());
+            console.log("source-to-ingest lag ms, ALL (indicative only, includes reconnect backlog):", sourceToIngestLagAll.percentiles());
+            console.log(
+              `source-to-ingest lag ms, STEADY-STATE (indicative only, excludes first ${BACKLOG_WINDOW} events after each connect):`,
+              sourceToIngestLagSteady.count() > 0 ? sourceToIngestLagSteady.percentiles() : "not enough steady-state samples yet",
+            );
           }
         }
       }
@@ -91,6 +109,7 @@ async function main() {
     try {
       await readStream(() => {
         attempt = 0;
+        eventsSinceConnect = 0;
       });
     } catch (err) {
       const base = Math.min(30_000, 1000 * 2 ** attempt);
