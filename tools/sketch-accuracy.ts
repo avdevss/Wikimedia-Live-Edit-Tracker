@@ -161,6 +161,10 @@ async function main() {
     const exactTop20 = [...exact.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
 
     console.log(`\n=== ${mult}x (${members.length} events, ${cardinality} distinct editors) ===`);
+    // Exact counting's own memory footprint is measured separately, in
+    // tools/measure-exact-memory.ts, as a fresh isolated process per
+    // sample size — heapUsed deltas across multiple iterations sharing
+    // one process (as this loop does) turned out to be unreliable.
 
     for (const budget of BUDGETS) {
       const [cmsResult, ssResult] = runBudget(budget, members, exact, exactTop20);
