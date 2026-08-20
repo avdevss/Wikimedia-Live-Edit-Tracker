@@ -10,14 +10,18 @@ function parseArgs() {
   };
   return {
     file: get("--file") ?? "data/capture-2026-08-19.jsonl",
-    sampleSize: Number(get("--sample-size") ?? "525000"),
+    baselineRate: Number(get("--baseline-rate") ?? "35"), // events/sec, real measured live rate
   };
 }
+
+const WINDOW_SECONDS = 300;
+const MULTIPLIERS = [25, 50, 75];
 
 type Budget = { label: string; cmsWidth: number; cmsDepth: number; ssCapacity: number };
 
 const BUDGETS: Budget[] = [
-  { label: "small", cmsWidth: 256, cmsDepth: 4, ssCapacity: 50 },
+  { label: "xsmall", cmsWidth: 256, cmsDepth: 4, ssCapacity: 50 },
+  { label: "small", cmsWidth: 512, cmsDepth: 4, ssCapacity: 100 },
   { label: "medium", cmsWidth: 1024, cmsDepth: 4, ssCapacity: 200 },
   { label: "large", cmsWidth: 4096, cmsDepth: 4, ssCapacity: 800 },
 ];
@@ -87,90 +91,104 @@ function evaluate(
   };
 }
 
+function runBudget(
+  budget: Budget,
+  members: string[],
+  exact: Map<string, number>,
+  exactTop20: Array<[string, number]>,
+): Metrics[] {
+  const cms = new CountMinSketch(budget.cmsWidth, budget.cmsDepth);
+  for (const m of members) cms.increment(m);
+
+  const cmsRanking = [...exact.keys()]
+    .map((k) => [k, cms.estimate(k)] as [string, number])
+    .sort((a, b) => b[1] - a[1]);
+  const cmsRankOf = new Map(cmsRanking.map(([k], i) => [k, i + 1]));
+
+  const cmsResult = evaluate(
+    "count_min_sketch",
+    cms.sizeBytes(),
+    exactTop20,
+    (k) => cms.estimate(k),
+    (k) => cmsRankOf.get(k) ?? null,
+    cmsRanking.length,
+  );
+
+  const ss = new SpaceSaving(budget.ssCapacity);
+  for (const m of members) ss.increment(m);
+
+  const ssRanking = ss.topK(budget.ssCapacity);
+  const ssRankOf = new Map(ssRanking.map(([k], i) => [k, i + 1]));
+  const ssEstimateOf = new Map(ssRanking);
+
+  const ssResult = evaluate(
+    "space_saving",
+    ss.sizeBytes(),
+    exactTop20,
+    (k) => ssEstimateOf.get(k) ?? 0,
+    (k) => ssRankOf.get(k) ?? null,
+    ssRanking.length,
+  );
+
+  return [cmsResult, ssResult];
+}
+
 async function main() {
-  const { file, sampleSize } = parseArgs();
-  console.log(`loading up to ${sampleSize} events from ${file}...`);
-  const members = await loadSample(file, sampleSize);
-  console.log(`loaded ${members.length} events`);
+  const { file, baselineRate } = parseArgs();
 
-  const exact = new Map<string, number>();
-  for (const m of members) exact.set(m, (exact.get(m) ?? 0) + 1);
-  const cardinality = exact.size;
-  const exactTop20 = [...exact.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
+  const sampleSizeFor = (mult: number) => Math.round(baselineRate * mult * WINDOW_SECONDS);
+  const largestMultiplier = Math.max(...MULTIPLIERS);
+  const maxSampleSize = sampleSizeFor(largestMultiplier);
 
-  console.log(`distinct editors (cardinality): ${cardinality}`);
-  console.log("exact top 5:", exactTop20.slice(0, 5));
+  console.log(`loading up to ${maxSampleSize} events from ${file} (covers all multipliers up to ${largestMultiplier}x)...`);
+  const allMembers = await loadSample(file, maxSampleSize);
+  console.log(`loaded ${allMembers.length} events`);
 
   const rows: string[] = [
-    "dimension,sample_events,cardinality,budget,structure,bytes,top20_overlap,mean_abs_rank_error,mean_relative_count_error",
+    "dimension,multiplier,sample_events,cardinality,budget,structure,bytes,top20_overlap,mean_abs_rank_error,mean_relative_count_error",
   ];
 
-  for (const budget of BUDGETS) {
-    const cms = new CountMinSketch(budget.cmsWidth, budget.cmsDepth);
-    for (const m of members) cms.increment(m);
+  // Ascending order: each multiplier's sample is a prefix of the largest
+  // one already loaded, since both start reading from the same file's
+  // beginning — no need to re-read the file per multiplier.
+  for (const mult of [...MULTIPLIERS].sort((a, b) => a - b)) {
+    const sampleSize = Math.min(sampleSizeFor(mult), allMembers.length);
+    const members = allMembers.slice(0, sampleSize);
 
-    const cmsRanking = [...exact.keys()]
-      .map((k) => [k, cms.estimate(k)] as [string, number])
-      .sort((a, b) => b[1] - a[1]);
-    const cmsRankOf = new Map(cmsRanking.map(([k], i) => [k, i + 1]));
+    const exact = new Map<string, number>();
+    for (const m of members) exact.set(m, (exact.get(m) ?? 0) + 1);
+    const cardinality = exact.size;
+    const exactTop20 = [...exact.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
 
-    const cmsResult = evaluate(
-      "count_min_sketch",
-      cms.sizeBytes(),
-      exactTop20,
-      (k) => cms.estimate(k),
-      (k) => cmsRankOf.get(k) ?? null,
-      cmsRanking.length,
-    );
-    console.log(`[${budget.label}] CMS:`, cmsResult);
-    rows.push(
-      [
-        "editors",
-        members.length,
-        cardinality,
-        budget.label,
-        cmsResult.structure,
-        cmsResult.bytes,
-        cmsResult.top20Overlap,
-        cmsResult.meanAbsRankError.toFixed(3),
-        cmsResult.meanRelativeCountError.toFixed(4),
-      ].join(","),
-    );
+    console.log(`\n=== ${mult}x (${members.length} events, ${cardinality} distinct editors) ===`);
 
-    const ss = new SpaceSaving(budget.ssCapacity);
-    for (const m of members) ss.increment(m);
+    for (const budget of BUDGETS) {
+      const [cmsResult, ssResult] = runBudget(budget, members, exact, exactTop20);
+      console.log(`[${budget.label}] CMS:`, cmsResult);
+      console.log(`[${budget.label}] Space-Saving:`, ssResult);
 
-    const ssRanking = ss.topK(budget.ssCapacity);
-    const ssRankOf = new Map(ssRanking.map(([k], i) => [k, i + 1]));
-    const ssEstimateOf = new Map(ssRanking);
-
-    const ssResult = evaluate(
-      "space_saving",
-      ss.sizeBytes(),
-      exactTop20,
-      (k) => ssEstimateOf.get(k) ?? 0,
-      (k) => ssRankOf.get(k) ?? null,
-      ssRanking.length,
-    );
-    console.log(`[${budget.label}] Space-Saving:`, ssResult);
-    rows.push(
-      [
-        "editors",
-        members.length,
-        cardinality,
-        budget.label,
-        ssResult.structure,
-        ssResult.bytes,
-        ssResult.top20Overlap,
-        ssResult.meanAbsRankError.toFixed(3),
-        ssResult.meanRelativeCountError.toFixed(4),
-      ].join(","),
-    );
+      for (const result of [cmsResult, ssResult]) {
+        rows.push(
+          [
+            "editors",
+            mult,
+            members.length,
+            cardinality,
+            budget.label,
+            result.structure,
+            result.bytes,
+            result.top20Overlap,
+            result.meanAbsRankError.toFixed(3),
+            result.meanRelativeCountError.toFixed(4),
+          ].join(","),
+        );
+      }
+    }
   }
 
   mkdirSync("results", { recursive: true });
   writeFileSync("results/sketch-accuracy.csv", rows.join("\n") + "\n");
-  console.log("wrote results/sketch-accuracy.csv");
+  console.log("\nwrote results/sketch-accuracy.csv");
 }
 
 main().catch((e) => {
