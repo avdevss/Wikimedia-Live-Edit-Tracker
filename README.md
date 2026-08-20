@@ -2,7 +2,9 @@
 
 A live leaderboard over the public Wikimedia edit firehose — trending editors, pages, wikis, and humans-vs-bots, updated over a 5-minute sliding window.
 
-> **Status:** the full pipeline (producer → Redpanda → aggregator → Redis → WebSocket API → UI) is built, running, and verified against live data. All three headline numbers below are real, measured, and reproducible — see `results/results.md` for the raw data behind each one. Only remaining gap: a saved screenshot file hasn't been captured into the repo yet.
+![Live leaderboard, real Wikimedia data](results/screenshot.png)
+
+> **Status:** the full pipeline (producer → Redpanda → aggregator → Redis → WebSocket API → UI) is built, running, and verified against live data. All three headline numbers below are real, measured, and reproducible — see `results/results.md` for the raw data behind each one.
 
 ## Quickstart
 
