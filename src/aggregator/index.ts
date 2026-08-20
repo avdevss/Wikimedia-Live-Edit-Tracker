@@ -89,6 +89,13 @@ async function sealToRedis() {
   // forever instead of draining toward empty.
   const wallClockTs = Math.floor(Date.now() / 1000);
 
+  // All four dimensions' writes, plus the two standalone keys, queued into
+  // one pipeline and sent as a single round trip instead of the previous
+  // 4-5 separate ones. Still one atomic transaction overall — a stronger
+  // guarantee than before (all dims commit together, not just each one
+  // individually), not a weaker one.
+  const pipeline = redis.multi();
+
   for (const dim of Object.keys(dims)) {
     advance(dims[dim], wallClockTs);
     const top = topK(dims[dim], TOP_N_SEALED);
@@ -97,32 +104,30 @@ async function sealToRedis() {
     const winKey = `lb:${dim}:win`;
 
     if (top.length === 0) {
-      await redis.del(winKey);
+      pipeline.del(winKey);
       continue;
     }
 
     const zaddArgs: (string | number)[] = [];
     for (const [member, score] of top) zaddArgs.push(score, member);
 
-    const results = await redis
-      .multi()
-      .del(nextKey)
-      .zadd(nextKey, ...zaddArgs)
-      .rename(nextKey, winKey)
-      .exec();
-
-    const failed = results?.find(([err]) => err);
-    if (failed) console.error(`seal ${dim} failed:`, failed[0]);
+    pipeline.del(nextKey);
+    pipeline.zadd(nextKey, ...zaddArgs);
+    pipeline.rename(nextKey, winKey);
   }
 
   if (latestIngestTs > 0) {
-    await redis.set("lb:latest_ingest_ts", latestIngestTs);
+    pipeline.set("lb:latest_ingest_ts", latestIngestTs);
   }
 
   // Own memory usage, for tools/bench.ts to read during load tests. Written
   // here rather than inspected externally (e.g. via `ps`) so the benchmark
   // tool stays a plain Redis/Kafka client, no OS-specific process lookup.
-  await redis.set("lb:aggregator_rss_bytes", process.memoryUsage().rss);
+  pipeline.set("lb:aggregator_rss_bytes", process.memoryUsage().rss);
+
+  const results = await pipeline.exec();
+  const failed = results?.find(([err]) => err);
+  if (failed) console.error("seal failed:", failed[0]);
 }
 
 setInterval(() => {
