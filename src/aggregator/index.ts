@@ -118,6 +118,11 @@ async function sealToRedis() {
   if (latestIngestTs > 0) {
     await redis.set("lb:latest_ingest_ts", latestIngestTs);
   }
+
+  // Own memory usage, for tools/bench.ts to read during load tests. Written
+  // here rather than inspected externally (e.g. via `ps`) so the benchmark
+  // tool stays a plain Redis/Kafka client, no OS-specific process lookup.
+  await redis.set("lb:aggregator_rss_bytes", process.memoryUsage().rss);
 }
 
 setInterval(() => {
