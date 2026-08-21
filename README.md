@@ -19,16 +19,6 @@ open src/web/index.html
 
 Verified from a clean clone: `docker compose up` brings up both services with no manual fixes (tested by cloning into a fresh directory and confirming Redpanda cluster info and a Redis `PING` both succeed).
 
-To reproduce the numbers below:
-
-```bash
-npx tsx tools/replay.ts --file data/capture-<date>.jsonl --rate 50   # in a separate terminal, for load
-npx tsx tools/bench.ts --out results/bench.csv --duration 30 --label "my-run"
-npx tsx tools/sketch-accuracy.ts --file data/capture-<date>.jsonl
-NODE_OPTIONS=--expose-gc npx tsx tools/measure-exact-memory.ts --file data/capture-<date>.jsonl --sample-size 525000
-python3 -m pip install matplotlib   # one-time; plotting is the only Python in this project
-python3 tools/plot.py
-```
 
 ## Architecture
 
@@ -77,11 +67,11 @@ python3 tools/plot.py
         +-------------------------+
 
    Offline tooling (results/ generation):
-     replay.ts              reads capture file, produces at Nx for load tests
-     bench.ts               collects latency and lag into CSV for the results tables
-     sketch-accuracy.ts     compares exact / CMS / Space-Saving at multiple budgets
+     replay.ts                reads capture file, produces at Nx for load tests
+     bench.ts                 collects latency and lag into CSV for the results tables
+     sketch-accuracy.ts       compares exact / CMS / Space-Saving at multiple budgets
      measure-exact-memory.ts  isolated heap measurement for the exact-counting baseline
-     plot.py                renders the three result PNGs from the CSVs
+     plot.py                  renders the three result PNGs from the CSVs
 ```
 
 ## The three headline numbers
@@ -118,9 +108,8 @@ The steady-state/backlog split is a real, necessary distinction, not a formality
 
 ## Limitations
 
-- **Single node, at-least-once delivery.** A clean restart cannot double-count (warm start replays into freshly-cleared buckets), but a mid-run consumer-group rebalance could double-count events within a single bucket. This is bounded and rare on a single-consumer setup, and deliberately not engineered around — see the plan's own scope decision on crash-recovery proving.
-- **No crash-recovery verification.** Cut from scope on purpose (see `realtime-leaderboard-plan.md` section 1) — this is a 2-day project, not a durability audit.
+- **Single node, at-least-once delivery.** A clean restart cannot double-count (warm start replays into freshly-cleared buckets), but a mid-run consumer-group rebalance could double-count events within a single bucket. This is bounded and rare on a single-consumer setup, and deliberately not engineered around.
 - **5-minute window only.** Nothing beyond the trailing 300 seconds is tracked or queryable.
 - **Two fixes are correct by code reasoning, not yet exercised by a real failure.** The empty-dimension Redis cleanup and the per-command Redis transaction error surfacing have never actually been triggered in testing (no dimension has gone empty; no Redis command has actually failed). Noted here rather than silently assumed correct. (The `ingest_ts`-based warm-start bucketing was in this category too, until a 7-minute post-restart check specifically ruled out the delayed-cliff failure mode — see Design decisions.)
-- **`replay.ts`'s achievable throughput is capped by its own produce mechanism, not the requested multiplier** — post-batching, peak eps ranges from ~109 (at 1x) to ~743 (at 50x) depending on multiplier and burst timing, still well short of literal 100x live rate. Batching (section 6.3) raised this substantially at moderate-to-high rates but didn't remove the ceiling entirely; something else (likely file-read/JSON-parse speed) becomes the limit near 100x.
-- **`replay.ts` caps any single inter-event pacing gap at 2000ms (`MAX_GAP_MS`), which quietly changes what "replayed at Nx" means.** The capture file has real multi-minute gaps from our own testing history (producer restarts during earlier work), not genuine Wikipedia quiet periods. Faithfully honoring those gaps — even compressed by the rate — stalled load tests for longer than the whole test window. The cap trades perfect timing fidelity for a load test that reliably delivers consistent amplified throughput, which is what section 6.3 actually needs. A genuine multi-minute quiet period (real or artificial) gets compressed to at most 2 seconds regardless of replay rate — a deliberate, stated distortion, not an oversight.
+- **`replay.ts`'s achievable throughput is capped by its own produce mechanism, not the requested multiplier** — post-batching, peak eps ranges from ~109 (at 1x) to ~743 (at 50x) depending on multiplier and burst timing, still well short of literal 100x live rate. Batching raised this substantially at moderate-to-high rates but didn't remove the ceiling entirely; something else (likely file-read/JSON-parse speed) becomes the limit near 100x.
+- **`replay.ts` caps any single inter-event pacing gap at 2000ms (`MAX_GAP_MS`), which quietly changes what "replayed at Nx" means.** The capture file has real multi-minute gaps from our own testing history (producer restarts during earlier work), not genuine Wikipedia quiet periods. Faithfully honoring those gaps — even compressed by the rate — stalled load tests for longer than the whole test window. The cap trades perfect timing fidelity for a load test that reliably delivers consistent amplified throughput. A genuine multi-minute quiet period (real or artificial) gets compressed to at most 2 seconds regardless of replay rate — a deliberate, stated distortion, not an oversight.
