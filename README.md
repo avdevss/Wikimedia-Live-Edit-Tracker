@@ -4,7 +4,6 @@ A live leaderboard over the public Wikimedia edit firehose — trending editors,
 
 ![Live leaderboard, real Wikimedia data](results/screenshot.png)
 
-> **Status:** the full pipeline (producer → Redpanda → aggregator → Redis → WebSocket API → UI) is built, running, and verified against live data. All three headline numbers below are real, measured, and reproducible — see `results/results.md` for the raw data behind each one.
 
 ## Quickstart
 
